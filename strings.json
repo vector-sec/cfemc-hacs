@@ -1,0 +1,25 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "CF-EMC Energy Setup",
+                "description": "Enter your credentials and account details.",
+                "data": {
+                    "username": "Username",
+                    "password": "Password",
+                    "member_number": "Member Number",
+                    "account_number": "Account Number",
+                    "backfill_days": "Days of historical data to fetch"
+                }
+            }
+        },
+        "error": {
+            "invalid_auth": "Invalid username or password. Please check your credentials and try again.",
+            "cannot_connect": "Unable to connect to the server. Please check your connection and try again later.",
+            "unknown": "An unknown error occurred."
+        },
+        "abort": {
+            "already_configured": "This account is already configured."
+        }
+    }
+}
