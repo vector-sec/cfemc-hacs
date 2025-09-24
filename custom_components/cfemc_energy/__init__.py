@@ -11,7 +11,7 @@ from .const import DOMAIN, CONF_BACKFILL_DAYS, CONF_MEMBER_NUMBER, CONF_ACCOUNT_
 from .coordinator import EMCDataCoordinator
 
 
-PLATFORMS: list[Platform] = []
+PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
