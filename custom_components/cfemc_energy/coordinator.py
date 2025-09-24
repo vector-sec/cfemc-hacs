@@ -1,12 +1,11 @@
 """Data update coordinator for the CF-EMC Energy integration."""
 from __future__ import annotations
 
-from datetime import timedelta, datetime
+from datetime import timedelta
 import logging
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
 from homeassistant.components.recorder.statistics import (
@@ -17,7 +16,7 @@ from homeassistant.const import UnitOfEnergy
 from homeassistant.util import dt as dt_util
 
 from .api import CFEMCApi
-from .const import DOMAIN, CONF_BACKFILL_DAYS
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,85 +30,89 @@ class EMCDataCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(hours=24),  # Run once a day
+            update_interval=timedelta(hours=24),
         )
         self.api = api
         self.backfill_days = backfill_days
-        self._first_run = True
+        self.last_successful_run_timestamp = None
 
     async def _async_update_data(self):
         """Fetch data from API endpoint."""
         try:
             today = dt_util.now().date()
+            yesterday = today - timedelta(days=1)
+            all_hourly_data = []
+
+            statistic_id = f"{DOMAIN}:energy_usage_{self.api.account_number}"
             
-            if self._first_run:
-                _LOGGER.info(f"Starting backfill process for the last {self.backfill_days} days.")
-                # Loop through each day in the backfill period
+            last_stats_list = await get_instance(self.hass).async_add_executor_job(
+                get_last_statistics, self.hass, 1, statistic_id, True, {"start"}
+            )
+
+            if not last_stats_list or statistic_id not in last_stats_list:
+                _LOGGER.info(f"No existing statistics found. Starting initial backfill process for the last {self.backfill_days} days.")
                 for i in range(self.backfill_days, 0, -1):
                     target_date = today - timedelta(days=i)
                     _LOGGER.info(f"Backfilling data for: {target_date.strftime('%Y-%m-%d')}")
-                    
-                    # Fetch data for this single day
                     hourly_data = await self.hass.async_add_executor_job(
                         self.api.get_hourly_data, target_date, target_date
                     )
-                    
-                    # Insert statistics for this single day
                     await self._insert_statistics(hourly_data)
-
-                self._first_run = False
+                
+                all_hourly_data = await self.hass.async_add_executor_job(
+                    self.api.get_hourly_data, yesterday, yesterday
+                )
+            
             else:
-                _LOGGER.info("Fetching hourly data for the previous day.")
-                yesterday = today - timedelta(days=1)
+                last_stat_entry = last_stats_list[statistic_id][0]
+                start_time = last_stat_entry['start']
+
+                if isinstance(start_time, float):
+                    start_time = dt_util.utc_from_timestamp(start_time)
+
+                last_stat_date = dt_util.as_local(start_time).date()
+                _LOGGER.debug(f"Most recent statistic is for date: {last_stat_date}. Yesterday was: {yesterday}.")
+
+                if last_stat_date >= yesterday:
+                    _LOGGER.info("Statistics are up to date. Skipping fetch.")
+                    return self.data
+                
+                _LOGGER.info("Existing statistics are stale. Fetching hourly data for the previous day.")
                 hourly_data = await self.hass.async_add_executor_job(
                     self.api.get_hourly_data, yesterday, yesterday
                 )
                 await self._insert_statistics(hourly_data)
+                all_hourly_data = hourly_data
+            
+            self.last_successful_run_timestamp = dt_util.now()
+            return all_hourly_data
 
         except Exception as err:
             raise UpdateFailed(f"Error communicating with API: {err}") from err
 
     async def _insert_statistics(self, hourly_data: list):
         """Insert historical energy data into Home Assistant's statistics."""
-        _LOGGER.debug(f"Received {len(hourly_data)} hourly records to process for statistics.")
-
         if not hourly_data:
-            _LOGGER.warning("No hourly data received from API to insert into statistics. Aborting.")
+            _LOGGER.warning("No hourly data received from API to insert into statistics.")
             return
 
         statistic_id = f"{DOMAIN}:energy_usage_{self.api.account_number}"
-        _LOGGER.debug(f"Preparing to insert statistics for ID: {statistic_id}")
-
+        
         last_stats = await get_instance(self.hass).async_add_executor_job(
             get_last_statistics, self.hass, 1, statistic_id, True, {"sum"}
         )
 
         usage_sum = 0.0
         if last_stats and statistic_id in last_stats and last_stats[statistic_id]:
-            # Safely get the 'sum', defaulting to 0.0 if it's None or the key is missing
             usage_sum = last_stats[statistic_id][0].get('sum') or 0.0
 
-        _LOGGER.debug(f"Starting with a historical sum of {usage_sum} kWh.")
-
         statistics_to_add = []
-        # Sort data by time to ensure chronological processing
         hourly_data.sort(key=lambda x: x['time'])
         
         for data in hourly_data:
-            from_time = data['time']
-            usage = data['usage']
-            
-            # This logic assumes we are always adding to the most recent sum.
-            # For backfilling, it's better to ensure the sum is correct for the specific day.
-            # However, HA's `get_last_statistics` is the simplest approach that works well.
-            usage_sum += usage
-
+            usage_sum += data['usage']
             statistics_to_add.append(
-                StatisticData(
-                    start=from_time,
-                    state=usage,
-                    sum=usage_sum,
-                )
+                StatisticData(start=data['time'], state=data['usage'], sum=usage_sum)
             )
 
         metadata = StatisticMetaData(
@@ -122,5 +125,5 @@ class EMCDataCoordinator(DataUpdateCoordinator):
         )
 
         async_add_external_statistics(self.hass, metadata, statistics_to_add)
-        _LOGGER.info(f"Successfully inserted {len(statistics_to_add)} new hourly energy statistics for {statistic_id}.")
+        _LOGGER.info(f"Successfully processed {len(statistics_to_add)} hourly energy statistics for {statistic_id}.")
 
