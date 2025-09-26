@@ -18,6 +18,7 @@ from homeassistant.util import dt as dt_util
 from .api import CFEMCApi
 from .const import DOMAIN
 
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -49,19 +50,10 @@ class EMCDataCoordinator(DataUpdateCoordinator):
                 get_last_statistics, self.hass, 1, statistic_id, True, {"start"}
             )
 
+            start_date_to_fetch = None
             if not last_stats_list or statistic_id not in last_stats_list:
-                _LOGGER.info(f"No existing statistics found. Starting initial backfill process for the last {self.backfill_days} days.")
-                for i in range(self.backfill_days, 0, -1):
-                    target_date = today - timedelta(days=i)
-                    _LOGGER.info(f"Backfilling data for: {target_date.strftime('%Y-%m-%d')}")
-                    hourly_data = await self.hass.async_add_executor_job(
-                        self.api.get_hourly_data, target_date, target_date
-                    )
-                    await self._insert_statistics(hourly_data)
-                
-                all_hourly_data = await self.hass.async_add_executor_job(
-                    self.api.get_hourly_data, yesterday, yesterday
-                )
+                _LOGGER.info(f"No existing statistics found. Starting initial backfill for the last {self.backfill_days} days.")
+                start_date_to_fetch = today - timedelta(days=self.backfill_days)
             
             else:
                 last_stat_entry = last_stats_list[statistic_id][0]
@@ -77,13 +69,27 @@ class EMCDataCoordinator(DataUpdateCoordinator):
                     _LOGGER.info("Statistics are up to date. Skipping fetch.")
                     return self.data
                 
-                _LOGGER.info("Existing statistics are stale. Fetching hourly data for the previous day.")
+                start_date_to_fetch = last_stat_date + timedelta(days=1)
+
+            # Fetch all days from start_date_to_fetch up to yesterday
+            current_date = start_date_to_fetch
+            while current_date <= yesterday:
+                _LOGGER.info(f"Fetching hourly data for: {current_date.strftime('%Y-%m-%d')}")
                 hourly_data = await self.hass.async_add_executor_job(
-                    self.api.get_hourly_data, yesterday, yesterday
+                    self.api.get_hourly_data, current_date, current_date
                 )
-                await self._insert_statistics(hourly_data)
-                all_hourly_data = hourly_data
-            
+                if hourly_data:
+                    await self._insert_statistics(hourly_data)
+                    all_hourly_data = hourly_data  # Keep the last successful fetch for the state
+                else:
+                    _LOGGER.warning(f"No data returned for {current_date.strftime('%Y-%m-%d')}. It may not be available yet.")
+                
+                current_date += timedelta(days=1)
+
+            if not all_hourly_data:
+                _LOGGER.info("No new data was fetched in this run.")
+                return self.data # Return existing data if nothing new was fetched
+
             self.last_successful_run_timestamp = dt_util.now()
             return all_hourly_data
 
@@ -126,4 +132,3 @@ class EMCDataCoordinator(DataUpdateCoordinator):
 
         async_add_external_statistics(self.hass, metadata, statistics_to_add)
         _LOGGER.info(f"Successfully processed {len(statistics_to_add)} hourly energy statistics for {statistic_id}.")
-
