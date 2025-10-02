@@ -24,6 +24,7 @@ class CFEMCApi:
         self.usage_url = "https://billing.utility.org/onlineportal/My-Account/Usage-History"
         self.daily_url = "https://billing.utility.org/onlineportal/DesktopModules/MeterUsage/API/MeterData.aspx/GetDailyUsageData"
         self.hourly_url = "https://billing.utility.org/onlineportal/DesktopModules/MeterUsage/API/MeterData.aspx/GetIntervalData"
+        self._is_logged_in = False # Add a flag to track login status
 
     def _login(self):
         """Log in to the utility's website."""
@@ -37,6 +38,7 @@ class CFEMCApi:
         requestverificationtoken = soup.find('input', {'name': '__RequestVerificationToken'})
 
         if not all([viewstate, eventvalidation, requestverificationtoken]):
+            self._is_logged_in = False
             _LOGGER.error("Could not find all required login form fields.")
             raise ConnectionError("Login page structure may have changed.")
 
@@ -67,10 +69,21 @@ class CFEMCApi:
         post_response.raise_for_status()
 
         if self.username not in post_response.text:
+            self._is_logged_in = False
             _LOGGER.error("Login failed. Response text did not contain username.")
             raise ConnectionError("Login failed. Please check credentials.")
+        
+        self._is_logged_in = True
         _LOGGER.debug("Login successful.")
         return True
+
+    def _ensure_logged_in(self):
+        """Check if the session is active, and log in if it's not."""
+        if self._is_logged_in:
+            _LOGGER.debug("Session is already active. Skipping login.")
+            return
+
+        self._login()
 
     def test_credentials(self):
         """Test if the provided credentials are valid."""
@@ -79,11 +92,17 @@ class CFEMCApi:
         except Exception as e:
             _LOGGER.error(f"Credential test failed: {e}")
             return False
+        finally:
+            # Clear the session after testing to ensure a fresh login on the first run.
+            self.session = requests.Session()
+            self._is_logged_in = False
 
     def get_hourly_data(self, start_date, end_date):
         """Fetch hourly energy data for a date range."""
-        _LOGGER.debug("Starting get_hourly_data")
-        self._login()
+        _LOGGER.debug(f"Getting hourly data for {start_date.strftime('%Y-%m-%d')}")
+        
+        # This will now only login if the session is not already active.
+        self._ensure_logged_in()
 
         start_date_str = start_date.strftime('%m/%d/%Y')
         end_date_str = end_date.strftime('%m/%d/%Y')
@@ -93,30 +112,34 @@ class CFEMCApi:
         
         self.session.headers['Content-Type'] = 'application/json; charset=UTF-8'
 
-        _LOGGER.debug("Getting usage page session...")
-        self.session.get(self.usage_url).raise_for_status()
+        try:
+            _LOGGER.debug("Getting usage page session...")
+            self.session.get(self.usage_url).raise_for_status()
 
-        daily_payload_str = str(daily_payload)
-        _LOGGER.debug(f"Requesting daily stats with payload: {daily_payload_str}")
-        self.session.post(self.daily_url, data=daily_payload_str).raise_for_status()
+            daily_payload_str = str(daily_payload)
+            _LOGGER.debug(f"Requesting daily stats with payload: {daily_payload_str}")
+            self.session.post(self.daily_url, data=daily_payload_str).raise_for_status()
 
-        hourly_payload_str = str(hourly_payload)
-        _LOGGER.debug(f"Requesting hourly stats with payload: {hourly_payload_str}")
-        api_response = self.session.post(self.hourly_url, data=hourly_payload_str)
-        api_response.raise_for_status()
+            hourly_payload_str = str(hourly_payload)
+            _LOGGER.debug(f"Requesting hourly stats with payload: {hourly_payload_str}")
+            api_response = self.session.post(self.hourly_url, data=hourly_payload_str)
+            api_response.raise_for_status()
+
+        except requests.exceptions.RequestException as e:
+            # If any request fails, the session might be invalid.
+            # Reset the login flag to force a new login on the next attempt.
+            _LOGGER.warning(f"A request failed: {e}. Session may be invalid. Forcing re-login on next attempt.")
+            self._is_logged_in = False
+            raise # Re-raise the exception to be handled by the coordinator
 
         hourly_response_json = json.loads(api_response.text).get('d',{}).get('Items',[{}])
         usage_data = hourly_response_json
 
         processed_data = []
         for entry in usage_data:
-            # The timestamp is local time from the utility.
             naive_timestamp = datetime.strptime(entry['UsageHourDate'], '%m/%d/%Y %I:%M %p')
-            
-            # Make the timestamp timezone-aware using Home Assistant's local timezone
             aware_timestamp = dt_util.as_local(naive_timestamp)
             
-            # Handle cases where KWH is 'NaN' or missing
             kwh_str = entry.get('KWH')
             if kwh_str == 'NaN' or kwh_str is None:
                 usage = 0.0
@@ -129,4 +152,3 @@ class CFEMCApi:
             })
             
         return processed_data
-
