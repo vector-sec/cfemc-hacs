@@ -1,12 +1,12 @@
 {
   "domain": "cfemc_energy",
   "name": "CF-EMC Energy",
-  "codeowners": [],
+  "codeowners": ["@vector-sec"],
   "config_flow": true,
   "dependencies": ["recorder"],
-  "documentation": "https://github.com/vector-sec/cf-emc-hcas",
+  "documentation": "https://github.com/vector-sec/cfemc-hacs",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/vector-sec/cf-emc-hcas/issues",
+  "issue_tracker": "https://github.com/vector-sec/cfemc-hacs/issues",
   "requirements": ["requests", "beautifulsoup4"],
-  "version": "1.0.0"
+  "version": "1.0.4"
 }

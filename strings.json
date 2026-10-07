@@ -3,8 +3,9 @@
         "step": {
             "user": {
                 "title": "CF-EMC Energy Setup",
-                "description": "Enter your credentials and account details.",
+                "description": "Enter your credentials and account details for CF-EMC.",
                 "data": {
+                    "name": "Name",
                     "username": "Username",
                     "password": "Password",
                     "member_number": "Member Number",
@@ -20,6 +21,17 @@
         },
         "abort": {
             "already_configured": "This account is already configured."
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "CF-EMC Energy Options",
+                "description": "Configure CF-EMC Energy integration options.",
+                "data": {
+                    "backfill_days": "Days of historical data to verify and backfill"
+                }
+            }
         }
     }
 }

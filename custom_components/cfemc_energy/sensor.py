@@ -1,6 +1,8 @@
 """Sensor platform for the CF-EMC Energy integration."""
 from __future__ import annotations
 
+from typing import Any
+
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -44,7 +46,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up the sensor entities from a config entry."""
     coordinator: EMCDataCoordinator = hass.data[DOMAIN][entry.entry_id]
-    
+
     entities = [
         CfemcEnergySensor(coordinator, description, entry)
         for description in SENSOR_DESCRIPTIONS
@@ -67,7 +69,7 @@ class CfemcEnergySensor(CoordinatorEntity[EMCDataCoordinator], RestoreEntity, Se
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": entry.data[CONF_NAME],
+            "name": entry.data.get(CONF_NAME, "CF-EMC Energy"),
             "manufacturer": "CF-EMC (Unofficial)",
         }
         self._restored_state: State | None = None
@@ -75,7 +77,6 @@ class CfemcEnergySensor(CoordinatorEntity[EMCDataCoordinator], RestoreEntity, Se
     async def async_added_to_hass(self) -> None:
         """Handle entity which provides non-async data."""
         await super().async_added_to_hass()
-        # Restore the last known state
         if (last_state := await self.async_get_last_state()) is not None:
             self._restored_state = last_state
 
@@ -84,25 +85,45 @@ class CfemcEnergySensor(CoordinatorEntity[EMCDataCoordinator], RestoreEntity, Se
         """Return the state of the sensor, falling back to the restored state."""
         # Prioritize fresh data from the coordinator for the usage sensor
         if self.entity_description.key == "yesterday_total_kwh":
-            if self.coordinator.data:
-                total_usage = sum(item['usage'] for item in self.coordinator.data)
+            if (
+                self.coordinator.data
+                and isinstance(self.coordinator.data, dict)
+                and self.coordinator.data.get("yesterday_kwh") is not None
+            ):
+                return self.coordinator.data["yesterday_kwh"]
+            if isinstance(self.coordinator.data, list) and self.coordinator.data:
+                total_usage = sum(item.get('usage', 0.0) for item in self.coordinator.data)
                 return round(total_usage, 2)
-            # If coordinator has no data (e.g., after restart), use the restored state
+            # Fall back to restored state as float
             if self._restored_state and self._restored_state.state not in ("unknown", "unavailable"):
-                return self._restored_state.state
+                try:
+                    return float(self._restored_state.state)
+                except (ValueError, TypeError):
+                    return None
             return None
 
         # Prioritize fresh data from the coordinator for the timestamp sensor
         if self.entity_description.key == "last_successful_update":
             if self.coordinator.last_successful_run_timestamp:
                 return self.coordinator.last_successful_run_timestamp
-            # If coordinator has no data, parse the restored state back into a datetime object
             if self._restored_state and self._restored_state.state not in ("unknown", "unavailable"):
                 try:
                     return dt_util.parse_datetime(self._restored_state.state)
                 except (TypeError, ValueError):
                     return None
             return None
-            
+
         return None
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        if self.entity_description.key == "yesterday_total_kwh":
+            attrs = {
+                "account_number": self.coordinator.api.account_number,
+                "member_number": self.coordinator.api.member_number,
+            }
+            if self.coordinator.last_successful_run_timestamp:
+                attrs["last_successful_update"] = self.coordinator.last_successful_run_timestamp.isoformat()
+            return attrs
+        return None
